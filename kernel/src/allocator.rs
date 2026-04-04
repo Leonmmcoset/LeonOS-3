@@ -81,8 +81,8 @@ pub fn init_heap() {
         return;
     }
 
-    unsafe {
-        let heap_start = core::ptr::addr_of_mut!(HEAP) as *mut u8 as usize;
-        ALLOCATOR.init(heap_start, HEAP_SIZE);
-    }
+    let heap_start = core::ptr::addr_of_mut!(HEAP) as *mut u8 as usize;
+    ALLOCATOR.init(heap_start, HEAP_SIZE);
 }
+
+

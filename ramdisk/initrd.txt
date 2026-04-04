@@ -1,0 +1,5 @@
+LeonOS 3 Ramdisk
+==============
+
+This file is loaded by bootloader as raw ramdisk bytes.
+You can view it from shell command: ramcat

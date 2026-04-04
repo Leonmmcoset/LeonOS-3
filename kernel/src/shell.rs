@@ -1,10 +1,11 @@
 use core::str;
 use os_terminal::{DrawTarget, Terminal};
 
-pub fn run_shell<D, F>(terminal: &mut Terminal<D>, mut read_input: F) -> !
+pub fn run_shell<D, F, H>(terminal: &mut Terminal<D>, mut read_input: F, mut handle_custom: H) -> !
 where
     D: DrawTarget,
     F: FnMut() -> Option<u8>,
+    H: FnMut(&mut Terminal<D>, &str) -> bool,
 {
     let mut line = [0u8; 256];
     let mut len = 0usize;
@@ -18,7 +19,7 @@ where
                     terminal.process(b"\n");
 
                     if let Ok(input) = str::from_utf8(&line[..len]) {
-                        exec_command(terminal, input);
+                        exec_command(terminal, input, &mut handle_custom);
                     } else {
                         terminal.process(b"invalid utf-8 input\n");
                     }
@@ -47,7 +48,11 @@ where
     }
 }
 
-fn exec_command<D: DrawTarget>(terminal: &mut Terminal<D>, input: &str) {
+fn exec_command<D, H>(terminal: &mut Terminal<D>, input: &str, handle_custom: &mut H)
+where
+    D: DrawTarget,
+    H: FnMut(&mut Terminal<D>, &str) -> bool,
+{
     let cmd = input.trim();
 
     if cmd.is_empty() {
@@ -55,7 +60,7 @@ fn exec_command<D: DrawTarget>(terminal: &mut Terminal<D>, input: &str) {
     }
 
     if cmd == "help" {
-        terminal.process(b"commands: help, echo, clear, about, halt\n");
+        terminal.process(b"commands: help, echo, clear, about, ramdisk, ls, stat <f>, cat <f>, posix, syscall, syscap, elf [f], run <f>, runelf, halt\n");
         return;
     }
 
@@ -87,8 +92,16 @@ fn exec_command<D: DrawTarget>(terminal: &mut Terminal<D>, input: &str) {
         return;
     }
 
+    if handle_custom(terminal, cmd) {
+        return;
+    }
+
     terminal.process(b"unknown command: ");
     terminal.process(cmd.as_bytes());
     terminal.process(b"\n");
 }
+
+
+
+
 
