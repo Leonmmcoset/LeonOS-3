@@ -29,6 +29,7 @@ pub enum RunError {
 struct Cpu {
     rax: u64,
     rbp: u64,
+    rbx: u64,
     rsp: u64,
     rdi: u64,
     rsi: u64,
@@ -36,6 +37,7 @@ struct Cpu {
     rcx: u64,
     r8: u64,
     r9: u64,
+    r13: u64,
     rip: u64,
     zf: bool,
     sf: bool,
@@ -43,6 +45,7 @@ struct Cpu {
 
 const MAX_STEPS: usize = 128 * 1024;
 const MAX_INTERP_MEM: usize = 16 * 1024 * 1024;
+const STACK_SIZE: usize = 128 * 1024;
 
 pub fn run_linux_elf<D: DrawTarget>(terminal: &mut Terminal<D>, image: &[u8]) -> Result<(), RunError> {
     let elf = elf::parse_elf64(image).map_err(RunError::Parse)?;
@@ -70,7 +73,8 @@ pub fn run_linux_elf<D: DrawTarget>(terminal: &mut Terminal<D>, image: &[u8]) ->
         });
     }
 
-    let mut mem = vec![0u8; mem_len];
+    let total_len = mem_len.checked_add(STACK_SIZE).ok_or(RunError::AddressOutOfRange)?;
+    let mut mem = vec![0u8; total_len];
 
     for seg in &elf.segments {
         let dst_start = (seg.vaddr - min_vaddr) as usize;
@@ -93,6 +97,7 @@ pub fn run_linux_elf<D: DrawTarget>(terminal: &mut Terminal<D>, image: &[u8]) ->
     let mut cpu = Cpu {
         rax: 0,
         rbp: 0,
+        rbx: 0,
         rsp: stack_top,
         rdi: 0,
         rsi: 0,
@@ -100,6 +105,7 @@ pub fn run_linux_elf<D: DrawTarget>(terminal: &mut Terminal<D>, image: &[u8]) ->
         rcx: 0,
         r8: 0,
         r9: 0,
+        r13: 0,
         rip: elf.entry,
         zf: false,
         sf: false,
@@ -140,6 +146,110 @@ fn exec_one<D: DrawTarget>(
         return Ok(true);
     }
 
+    // push r13
+    if b[0] == 0x41 && b[1] == 0x55 {
+        push_u64(base, mem, cpu, cpu.r13)?;
+        cpu.rip += 2;
+        return Ok(false);
+    }
+
+    // pop r13
+    if b[0] == 0x41 && b[1] == 0x5D {
+        cpu.r13 = pop_u64(base, mem, cpu)?;
+        cpu.rip += 2;
+        return Ok(false);
+    }
+
+    // movsxd rax, esi
+    if b[0] == 0x48 && b[1] == 0x63 && b[2] == 0xC6 {
+        cpu.rax = (cpu.rsi as u32 as i32 as i64) as u64;
+        cpu.rip += 3;
+        return Ok(false);
+    }
+
+    // mov r13, rdi
+    if b[0] == 0x49 && b[1] == 0x89 && b[2] == 0xFD {
+        cpu.r13 = cpu.rdi;
+        cpu.rip += 3;
+        return Ok(false);
+    }
+
+    // push rbp
+    if b[0] == 0x55 {
+        push_u64(base, mem, cpu, cpu.rbp)?;
+        cpu.rip += 1;
+        return Ok(false);
+    }
+
+    // pop rbp
+    if b[0] == 0x5D {
+        cpu.rbp = pop_u64(base, mem, cpu)?;
+        cpu.rip += 1;
+        return Ok(false);
+    }
+
+    // lea rdi, [rdx + rax*8 + 8]
+    if b[0] == 0x48 && b[1] == 0x8D && b[2] == 0x7C && b[3] == 0xC2 && b[4] == 0x08 {
+        cpu.rdi = cpu.rdx.wrapping_add(cpu.rax.wrapping_mul(8)).wrapping_add(8);
+        cpu.rip += 5;
+        return Ok(false);
+    }
+
+    // mov [rdx + rax*8 + 8], rdi
+    if b[0] == 0x48 && b[1] == 0x89 && b[2] == 0x7C && b[3] == 0xC2 && b[4] == 0x08 {
+        let addr = cpu.rdx.wrapping_add(cpu.rax.wrapping_mul(8)).wrapping_add(8);
+        write_u64(base, mem, addr, cpu.rdi)?;
+        cpu.rip += 5;
+        return Ok(false);
+    }
+
+    // mov rdi, [rdx + rax*8 + 8]
+    if b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x7C && b[3] == 0xC2 && b[4] == 0x08 {
+        let addr = cpu.rdx.wrapping_add(cpu.rax.wrapping_mul(8)).wrapping_add(8);
+        cpu.rdi = read_u64(base, mem, addr)?;
+        cpu.rip += 5;
+        return Ok(false);
+    }
+    // mov rbp, rax
+    if b[0] == 0x48 && b[1] == 0x89 && b[2] == 0xC5 {
+        cpu.rbp = cpu.rax;
+        cpu.rip += 3;
+        return Ok(false);
+    }
+
+    // mov rbp, rsp
+    if b[0] == 0x48 && b[1] == 0x89 && b[2] == 0xE5 {
+        cpu.rbp = cpu.rsp;
+        cpu.rip += 3;
+        return Ok(false);
+    }
+
+    // mov rsp, rbp
+    if b[0] == 0x48 && b[1] == 0x89 && b[2] == 0xEC {
+        cpu.rsp = cpu.rbp;
+        cpu.rip += 3;
+        return Ok(false);
+    }
+
+    // add/sub r64, imm8 (REX.W + 83 /0 or /5, mod=11)
+    if b[0] == 0x48 && b[1] == 0x83 && (b[2] & 0xC0) == 0xC0 {
+        let op = (b[2] >> 3) & 0x07;
+        let reg = b[2] & 0x07;
+        let imm = b[3] as i8 as i64;
+        let cur = get_reg64(cpu, reg);
+        let next = match op {
+            0 => ((cur as i64).wrapping_add(imm)) as u64, // add
+            5 => ((cur as i64).wrapping_sub(imm)) as u64, // sub
+            _ => {
+                cur
+            }
+        };
+        if op == 0 || op == 5 {
+            set_reg64(cpu, reg, next);
+            cpu.rip += 4;
+            return Ok(false);
+        }
+    }
     // mov rdi, rax
     if b[0] == 0x48 && b[1] == 0x89 && b[2] == 0xC7 {
         cpu.rdi = cpu.rax;
@@ -194,6 +304,80 @@ fn exec_one<D: DrawTarget>(
         return Ok(false);
     }
 
+    // mov r32, [r/m64 + disp] subset: 8B /r (zero-extend into 64-bit)
+    if b[0] == 0x8B {
+        let modrm = b[1];
+        let mode = (modrm >> 6) & 0x03;
+        let reg = (modrm >> 3) & 0x07;
+        let rm = modrm & 0x07;
+
+        if rm != 0x04 {
+            let addr = if mode == 0x00 {
+                if rm == 0x05 {
+                    None
+                } else {
+                    Some(get_reg64(cpu, rm))
+                }
+            } else if mode == 0x01 {
+                Some(((get_reg64(cpu, rm) as i64) + (b[2] as i8 as i64)) as u64)
+            } else {
+                None
+            };
+
+            if let Some(addr) = addr {
+                let v = read_u32(base, mem, addr)? as u64;
+                match reg {
+                    0 => cpu.rax = v,
+                    1 => cpu.rcx = v,
+                    2 => cpu.rdx = v,
+                    6 => cpu.rsi = v,
+                    7 => cpu.rdi = v,
+                    _ => {}
+                }
+                cpu.rip += if mode == 0x01 { 3 } else { 2 };
+                return Ok(false);
+            }
+        }
+    }
+
+    // lea r64, [r/m64 + disp8] subset for REX.W
+    if b[0] == 0x48 && b[1] == 0x8D {
+        let modrm = b[2];
+        let mode = (modrm >> 6) & 0x03;
+        let reg = (modrm >> 3) & 0x07;
+        let rm = modrm & 0x07;
+        if mode == 0x01 && rm != 0x04 {
+            let addr = ((get_reg64(cpu, rm) as i64) + (b[3] as i8 as i64)) as u64;
+            match reg {
+                0 => cpu.rax = addr,
+                2 => cpu.rdx = addr,
+                5 => cpu.rbp = addr,
+                6 => cpu.rsi = addr,
+                7 => cpu.rdi = addr,
+                _ => {}
+            }
+            cpu.rip += 4;
+            return Ok(false);
+        }
+    }
+
+    // lea r8/r9, [r/m64 + disp8] subset for REX.WR
+    if b[0] == 0x4C && b[1] == 0x8D {
+        let modrm = b[2];
+        let mode = (modrm >> 6) & 0x03;
+        let reg = (modrm >> 3) & 0x07;
+        let rm = modrm & 0x07;
+        if mode == 0x01 && rm != 0x04 {
+            let addr = ((get_reg64(cpu, rm) as i64) + (b[3] as i8 as i64)) as u64;
+            match reg {
+                0 => cpu.r8 = addr,
+                1 => cpu.r9 = addr,
+                _ => {}
+            }
+            cpu.rip += 4;
+            return Ok(false);
+        }
+    }
     // mov rsi, [rdi]
     if b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x37 {
         cpu.rsi = read_u64(base, mem, cpu.rdi)?;
@@ -528,10 +712,15 @@ fn handle_syscall<D: DrawTarget>(
                     let Some(ch) = syscall::read_stdin_byte_blocking() else {
                         break;
                     };
-                    mem[start + got] = ch;
-                    terminal.process(&[ch]);
+                    let mapped = if ch == b'\r' { b'\n' } else { ch };
+                    mem[start + got] = mapped;
+                    if mapped == b'\n' {
+                        terminal.process(b"\n");
+                    } else {
+                        terminal.process(&[mapped]);
+                    }
                     got += 1;
-                    if ch == b'\n' || ch == b'\r' {
+                    if mapped == b'\n' {
                         break;
                     }
                 }
@@ -601,6 +790,33 @@ fn set_al(cpu: &mut Cpu, v: u8) {
     cpu.rax = (cpu.rax & !0xff) | (v as u64);
 }
 
+fn get_reg64(cpu: &Cpu, reg: u8) -> u64 {
+    match reg {
+        0 => cpu.rax,
+        1 => cpu.rcx,
+        2 => cpu.rdx,
+        3 => cpu.rbx,
+        4 => cpu.rsp,
+        5 => cpu.rbp,
+        6 => cpu.rsi,
+        7 => cpu.rdi,
+        _ => 0,
+    }
+}
+
+fn set_reg64(cpu: &mut Cpu, reg: u8, val: u64) {
+    match reg {
+        0 => cpu.rax = val,
+        1 => cpu.rcx = val,
+        2 => cpu.rdx = val,
+        3 => cpu.rbx = val,
+        4 => cpu.rsp = val,
+        5 => cpu.rbp = val,
+        6 => cpu.rsi = val,
+        7 => cpu.rdi = val,
+        _ => {}
+    }
+}
 fn push_u64(base: u64, mem: &mut [u8], cpu: &mut Cpu, v: u64) -> Result<(), RunError> {
     let new_rsp = cpu.rsp.checked_sub(8).ok_or(RunError::AddressOutOfRange)?;
     write_u64(base, mem, new_rsp, v)?;
@@ -678,6 +894,22 @@ fn write_u64(base: u64, mem: &mut [u8], va: u64, v: u64) -> Result<(), RunError>
 fn read_i32(base: u64, mem: &[u8], va: u64) -> Result<i32, RunError> {
     Ok(read_u32(base, mem, va)? as i32)
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

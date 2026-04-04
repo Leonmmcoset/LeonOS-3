@@ -14,6 +14,7 @@ fn main() {
     println!("cargo:rerun-if-changed=ramdisk/initrd.txt");
     println!("cargo:rerun-if-changed=userspace/hello_world");
     println!("cargo:rerun-if-changed=userspace/c_hello_name");
+    println!("cargo:rerun-if-changed=userspace/sbase");
     println!("cargo:rerun-if-changed=userspace/busybox");
 
     let kernel = PathBuf::from(
@@ -72,7 +73,19 @@ fn main() {
             data: bin,
         });
     } else {
-        println!("cargo:warning=userspace/busybox not found; place busybox binary at userspace/busybox");
+        println!("cargo:warning=userspace/busybox not found; place binary at userspace/busybox");
+    }
+
+    let sbase_path = Path::new("userspace/sbase-box");
+    if sbase_path.exists() {
+        let bin = fs::read(sbase_path).expect("failed to read userspace/sbase-box");
+        files.push(BuildFile {
+            name: "sbase",
+            mode: 0o100755,
+            data: bin,
+        });
+    } else {
+        println!("cargo:warning=userspace/sbase-box not found; place binary at userspace/sbase-box if needed");
     }
 
     let ramdisk = build_lfs1(&files);

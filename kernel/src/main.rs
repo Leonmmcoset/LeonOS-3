@@ -291,24 +291,32 @@ fn handle_custom_command<D: DrawTarget>(terminal: &mut Terminal<D>, cmd: &str) -
         return true;
     }
 
-    let run_target = if let Some(name) = cmd.strip_prefix("run ") {
-        Some(name.trim())
+        let run_target = if let Some(rest) = cmd.strip_prefix("run ") {
+        let mut parts = rest.trim().splitn(2, char::is_whitespace);
+        let name = parts.next().unwrap_or("").trim();
+        let args = parts.next().unwrap_or("").trim();
+        if name.is_empty() {
+            None
+        } else {
+            Some((name, args))
+        }
     } else if cmd == "runelf" {
-        Some("hello_world")
+        Some(("hello_world", ""))
     } else {
         None
     };
-    if let Some(name) = run_target {
+
+    if let Some((name, args)) = run_target {
         if let Some(bytes) = ramdisk_bytes() {
             match fs::open(bytes, name) {
                 Ok(rec) => match elf_runner::run_linux_elf(terminal, rec.data) {
                     Ok(()) => {
                         let code = syscall::last_exit_code();
-                        let _ = write!(terminal, "\nrun {}: exited with code {}\n", name, code);
+                        let _ = write!(terminal, "\nrun {} {}: exited with code {}\n", name, args, code);
                     }
                     Err(err) => {
-                        let _ = write!(terminal, "run {}: failed: {:?}\n", name, err);
-                        serial_write(&format!("[LeonOS3] run {} failed: {:?}\n", name, err));
+                        let _ = write!(terminal, "run {} {}: failed: {:?}\n", name, args, err);
+                        serial_write(&format!("[LeonOS3] run {} {} failed: {:?}\n", name, args, err));
                     }
                 },
                 Err(e) => {
@@ -526,6 +534,12 @@ fn alloc_error(_layout: Layout) -> ! {
         spin_loop();
     }
 }
+
+
+
+
+
+
 
 
 
