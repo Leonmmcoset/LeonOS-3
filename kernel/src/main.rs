@@ -14,6 +14,7 @@ mod shell;
 mod syscall;
 
 use alloc::boxed::Box;
+use alloc::format;
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::info::{FrameBufferInfo, Optional, PixelFormat};
 use bootloader_api::{entry_point, BootInfo};
@@ -91,6 +92,7 @@ struct RamdiskInfo {
 static mut RAMDISK_INFO: Option<RamdiskInfo> = None;
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+    syscall::set_stdin_reader(keyboard_read_ascii_nonblocking);
     allocator::init_heap();
     serial_write("[LeonOS3] kernel entered\n");
 
@@ -124,6 +126,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 boot_line(&mut terminal, BootLevel::Ok, "Load ramdisk");
                 match fs::header(bytes) {
                     Ok(h) => {
+                        syscall::set_rootfs(bytes);
                         let _ = write!(terminal, "[  OK  ] Mount rootfs ({} files)\n", h.file_count);
                     }
                     Err(_) => {
@@ -162,6 +165,7 @@ fn handle_custom_command<D: DrawTarget>(terminal: &mut Terminal<D>, cmd: &str) -
             if let Some(bytes) = ramdisk_bytes() {
                 match fs::header(bytes) {
                     Ok(h) => {
+                        syscall::set_rootfs(bytes);
                         let _ = write!(terminal, "rootfs: files={}\n", h.file_count);
                     }
                     Err(e) => {
@@ -245,6 +249,12 @@ fn handle_custom_command<D: DrawTarget>(terminal: &mut Terminal<D>, cmd: &str) -
         return true;
     }
 
+    if cmd == "busybox" {
+        terminal.process(b"busybox status: pre-boot compatibility mode\n");
+        let _ = write!(terminal, "syscalls: {}\n", syscall::supported_syscalls_hint());
+        terminal.process(b"missing: execve/fork/wait4/pipe/tty ioctl/procfs\n");
+        return true;
+    }
     if cmd == "syscap" {
         let _ = write!(terminal, "syscap: {}\n", syscall::supported_syscalls_hint());
         return true;
@@ -298,6 +308,7 @@ fn handle_custom_command<D: DrawTarget>(terminal: &mut Terminal<D>, cmd: &str) -
                     }
                     Err(err) => {
                         let _ = write!(terminal, "run {}: failed: {:?}\n", name, err);
+                        serial_write(&format!("[LeonOS3] run {} failed: {:?}\n", name, err));
                     }
                 },
                 Err(e) => {
@@ -515,4 +526,9 @@ fn alloc_error(_layout: Layout) -> ! {
         spin_loop();
     }
 }
+
+
+
+
+
 

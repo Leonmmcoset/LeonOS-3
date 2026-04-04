@@ -1,3 +1,4 @@
+use core::hint::spin_loop;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 pub const STDIN_FILENO: usize = 0;
@@ -12,6 +13,28 @@ pub type SysResult = isize;
 pub struct PosixLayer {
     pid: AtomicU32,
     brk: AtomicUsize,
+}
+
+static mut STDIN_READER: Option<fn() -> Option<u8>> = None;
+
+pub fn set_stdin_reader(reader: fn() -> Option<u8>) {
+    unsafe {
+        STDIN_READER = Some(reader);
+    }
+}
+
+pub fn read_stdin_byte_blocking() -> Option<u8> {
+    let reader = unsafe { STDIN_READER };
+    let Some(reader_fn) = reader else {
+        return None;
+    };
+
+    loop {
+        if let Some(ch) = reader_fn() {
+            return Some(ch);
+        }
+        spin_loop();
+    }
 }
 
 impl PosixLayer {
@@ -44,10 +67,38 @@ impl PosixLayer {
         }
     }
 
-    pub fn read(&self, fd: usize, _buf: *mut u8, _len: usize) -> SysResult {
+    pub fn read(&self, fd: usize, buf: *mut u8, len: usize) -> SysResult {
         match fd {
-            STDIN_FILENO => 0,
+            STDIN_FILENO => {
+                if buf.is_null() || len == 0 {
+                    return 0;
+                }
+
+                let reader = unsafe { STDIN_READER };
+                let Some(reader_fn) = reader else {
+                    return 0;
+                };
+
+                let mut n = 0usize;
+                while n < len {
+                    if let Some(ch) = reader_fn() {
+                        unsafe {
+                            *buf.add(n) = ch;
+                        }
+                        n += 1;
+                        if ch == b'\n' || ch == b'\r' {
+                            break;
+                        }
+                    } else {
+                        spin_loop();
+                    }
+                }
+
+                n as isize
+            }
             _ => -(EBADF as isize),
         }
     }
 }
+
+

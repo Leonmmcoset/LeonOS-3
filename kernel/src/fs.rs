@@ -71,6 +71,14 @@ pub fn open<'a>(image: &'a [u8], wanted: &str) -> Result<FileRecord<'a>, FsError
     Err(FsError::NotFound)
 }
 
+pub fn entry<'a>(image: &'a [u8], idx: usize) -> Result<FileRecord<'a>, FsError> {
+    let hdr = header(image)?;
+    if idx >= hdr.file_count as usize {
+        return Err(FsError::NotFound);
+    }
+    entry_at(image, idx)
+}
+
 fn entry_at<'a>(image: &'a [u8], idx: usize) -> Result<FileRecord<'a>, FsError> {
     let start = HEADER_SIZE
         .checked_add(idx.checked_mul(ENTRY_SIZE).ok_or(FsError::OutOfBounds)?)
@@ -104,3 +112,4 @@ fn entry_at<'a>(image: &'a [u8], idx: usize) -> Result<FileRecord<'a>, FsError> 
         data: &image[offset..data_end],
     })
 }
+

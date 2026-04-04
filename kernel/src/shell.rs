@@ -60,7 +60,7 @@ where
     }
 
     if cmd == "help" {
-        terminal.process(b"commands: help, echo, clear, about, ramdisk, ls, stat <f>, cat <f>, posix, syscall, syscap, elf [f], run <f>, runelf, halt\n");
+        terminal.process(b"commands: help, echo, clear, about, ramdisk, ls, stat <f>, cat <f>, posix, syscall, syscap, busybox, elf [f], run <f>, runelf, halt\n");
         return;
     }
 
@@ -100,8 +100,4 @@ where
     terminal.process(cmd.as_bytes());
     terminal.process(b"\n");
 }
-
-
-
-
 

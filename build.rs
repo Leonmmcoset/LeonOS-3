@@ -13,6 +13,8 @@ struct BuildFile {
 fn main() {
     println!("cargo:rerun-if-changed=ramdisk/initrd.txt");
     println!("cargo:rerun-if-changed=userspace/hello_world");
+    println!("cargo:rerun-if-changed=userspace/c_hello_name");
+    println!("cargo:rerun-if-changed=userspace/busybox");
 
     let kernel = PathBuf::from(
         std::env::var_os("CARGO_BIN_FILE_KERNEL_kernel")
@@ -42,6 +44,35 @@ fn main() {
         });
     } else {
         println!("cargo:warning=userspace/hello_world not found; run `make userspace`");
+    }
+
+    let c_hello_path = Path::new("userspace/c_hello_name");
+    if c_hello_path.exists() {
+        let elf = fs::read(c_hello_path).expect("failed to read userspace/c_hello_name");
+        files.push(BuildFile {
+            name: "c_hello_name",
+            mode: 0o100755,
+            data: elf,
+        });
+    } else {
+        println!("cargo:warning=userspace/c_hello_name not found; run `make userspace`");
+    }
+
+    let busybox_path = Path::new("userspace/busybox");
+    if busybox_path.exists() {
+        let bin = fs::read(busybox_path).expect("failed to read userspace/busybox");
+        files.push(BuildFile {
+            name: "busybox",
+            mode: 0o100755,
+            data: bin.clone(),
+        });
+        files.push(BuildFile {
+            name: "sh",
+            mode: 0o100755,
+            data: bin,
+        });
+    } else {
+        println!("cargo:warning=userspace/busybox not found; place busybox binary at userspace/busybox");
     }
 
     let ramdisk = build_lfs1(&files);
