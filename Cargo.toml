@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["kernel"]
+
+[package]
+name = "leonos3"
+version = "0.1.0"
+edition = "2021"
+default-run = "leonos3"
+
+[build-dependencies]
+bootloader = "0.11.15"
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }

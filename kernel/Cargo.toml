@@ -1,0 +1,15 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bootloader_api = "0.11"
+x86_64 = "0.15.2"
+os-terminal = { git = "https://gh-proxy.com/https://github.com/wenxuanjun/os-terminal", default-features = false, features = ["bitmap"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
