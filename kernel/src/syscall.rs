@@ -3,7 +3,7 @@ use crate::posix::{self, PosixLayer, EINVAL};
 use core::cmp::min;
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 pub const SYS_READ: usize = 0;
 pub const SYS_WRITE: usize = 1;
@@ -102,6 +102,7 @@ pub const SYS_RSEQ: usize = 334;
 
 const ENOENT: isize = 2;
 const EBADF: isize = 9;
+const ECHILD: isize = 10;
 const EFAULT: isize = 14;
 const EBUSY: isize = 16;
 const ENOTDIR: isize = 20;
@@ -128,6 +129,7 @@ const CSTR_MAX: usize = 256;
 
 static POSIX: PosixLayer = PosixLayer::new();
 static LAST_EXIT: AtomicI32 = AtomicI32::new(0);
+static EXIT_WAITABLE: AtomicBool = AtomicBool::new(false);
 static MMAP_BASE: AtomicU64 = AtomicU64::new(0x7000_0000);
 static ARCH_FS: AtomicU64 = AtomicU64::new(0);
 static ARCH_GS: AtomicU64 = AtomicU64::new(0);
@@ -204,6 +206,7 @@ pub fn dispatch(
         SYS_SET_TID_ADDRESS => POSIX.getpid() as isize,
         SYS_EXIT | SYS_EXIT_GROUP => {
             LAST_EXIT.store(arg0 as i32, Ordering::Relaxed);
+            EXIT_WAITABLE.store(true, Ordering::Release);
             0
         }
 
@@ -285,6 +288,8 @@ pub fn dispatch(
 
         SYS_PREAD64 | SYS_PWRITE64 | SYS_READV | SYS_WRITEV | SYS_PSELECT6 | SYS_PPOLL | SYS_POLL | SYS_SELECT => 0,
 
+        SYS_WAIT4 => sys_wait4(arg0 as isize, arg1 as *mut i32, arg2, arg3 as *mut u8),
+
         SYS_SOCKET | SYS_CONNECT | SYS_ACCEPT | SYS_SENDTO | SYS_RECVFROM | SYS_SHUTDOWN | SYS_BIND | SYS_LISTEN => {
             -(ENOSYS as isize)
         }
@@ -292,7 +297,6 @@ pub fn dispatch(
         | SYS_FORK
         | SYS_VFORK
         | SYS_EXECVE
-        | SYS_WAIT4
         | SYS_PIPE
         | SYS_MREMAP
         | SYS_MSYNC
@@ -938,16 +942,51 @@ pub fn last_exit_code() -> i32 {
     LAST_EXIT.load(Ordering::Relaxed)
 }
 
+pub fn mark_exit_code(code: i32) {
+    LAST_EXIT.store(code, Ordering::Relaxed);
+    EXIT_WAITABLE.store(true, Ordering::Release);
+}
+
+pub fn rootfs_image() -> Option<&'static [u8]> {
+    unsafe { ROOTFS }
+}
+
 pub fn posix_snapshot() -> (u32, usize) {
     (POSIX.getpid(), POSIX.brk_get())
 }
 
 pub fn supported_syscalls_hint() -> &'static str {
-    "read, write, close, dup/dup2, brk, mmap, mprotect, munmap, rt_sigaction, rt_sigprocmask, ioctl, getpid/gettid, exit/exit_group, arch_prctl, futex, clock_gettime/gettimeofday, uname, uid/gid, getcwd/chdir, access/faccessat, readlink/readlinkat, openat, fstat/newfstatat, lseek, getdents64, getrandom, prlimit64, set_robust_list"
+    "read, write, close, dup/dup2, brk, mmap, mprotect, munmap, rt_sigaction, rt_sigprocmask, ioctl, getpid/gettid, exit/exit_group, wait4(min), arch_prctl, futex, clock_gettime/gettimeofday, uname, uid/gid, getcwd/chdir, access/faccessat, readlink/readlinkat, openat, fstat/newfstatat, lseek, getdents64, getrandom, prlimit64, set_robust_list"
 }
 
 
 
 
 
+
+
+
+
+
+
+fn sys_wait4(pid: isize, status_ptr: *mut i32, _options: usize, _rusage: *mut u8) -> isize {
+    let self_pid = POSIX.getpid() as isize;
+    if pid > 0 && pid != self_pid {
+        return -(ECHILD as isize);
+    }
+
+    if !EXIT_WAITABLE.swap(false, Ordering::AcqRel) {
+        return -(ECHILD as isize);
+    }
+
+    if !status_ptr.is_null() {
+        let code = LAST_EXIT.load(Ordering::Acquire);
+        let status = (code & 0xff) << 8;
+        unsafe {
+            ptr::write_unaligned(status_ptr, status);
+        }
+    }
+
+    self_pid
+}
 

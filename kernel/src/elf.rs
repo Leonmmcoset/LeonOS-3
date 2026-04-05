@@ -14,6 +14,7 @@ pub struct LoadSegment {
 #[derive(Debug)]
 pub struct ElfImage {
     pub entry: u64,
+    pub e_type: u16,
     pub segments: Vec<LoadSegment>,
 }
 
@@ -116,6 +117,7 @@ pub fn parse_elf64(image: &[u8]) -> Result<ElfImage, ElfError> {
 
     Ok(ElfImage {
         entry: ehdr.e_entry,
+        e_type: ehdr.e_type,
         segments,
     })
 }

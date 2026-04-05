@@ -14,7 +14,10 @@ fn main() {
     println!("cargo:rerun-if-changed=ramdisk/initrd.txt");
     println!("cargo:rerun-if-changed=userspace/hello_world");
     println!("cargo:rerun-if-changed=userspace/c_hello_name");
-    println!("cargo:rerun-if-changed=userspace/sbase");
+    println!("cargo:rerun-if-changed=userspace/exit7");
+    println!("cargo:rerun-if-changed=userspace/wait4_echild");
+    println!("cargo:rerun-if-changed=userspace/wait4_reap");
+    println!("cargo:rerun-if-changed=userspace/sbase-box");
     println!("cargo:rerun-if-changed=userspace/busybox");
 
     let kernel = PathBuf::from(
@@ -35,29 +38,11 @@ fn main() {
         data: initrd,
     });
 
-    let user_elf_path = Path::new("userspace/hello_world");
-    if user_elf_path.exists() {
-        let elf = fs::read(user_elf_path).expect("failed to read userspace/hello_world");
-        files.push(BuildFile {
-            name: "hello_world",
-            mode: 0o100755,
-            data: elf,
-        });
-    } else {
-        println!("cargo:warning=userspace/hello_world not found; run `make userspace`");
-    }
-
-    let c_hello_path = Path::new("userspace/c_hello_name");
-    if c_hello_path.exists() {
-        let elf = fs::read(c_hello_path).expect("failed to read userspace/c_hello_name");
-        files.push(BuildFile {
-            name: "c_hello_name",
-            mode: 0o100755,
-            data: elf,
-        });
-    } else {
-        println!("cargo:warning=userspace/c_hello_name not found; run `make userspace`");
-    }
+    maybe_add_file(&mut files, "hello_world", "userspace/hello_world", 0o100755);
+    maybe_add_file(&mut files, "c_hello_name", "userspace/c_hello_name", 0o100755);
+    maybe_add_file(&mut files, "exit7", "userspace/exit7", 0o100755);
+    maybe_add_file(&mut files, "wait4_echild", "userspace/wait4_echild", 0o100755);
+    maybe_add_file(&mut files, "wait4_reap", "userspace/wait4_reap", 0o100755);
 
     let busybox_path = Path::new("userspace/busybox");
     if busybox_path.exists() {
@@ -102,6 +87,16 @@ fn main() {
         .expect("failed to create BIOS disk image");
 
     println!("cargo:rustc-env=BIOS_PATH={}", bios_path.display());
+}
+
+fn maybe_add_file(files: &mut Vec<BuildFile>, name: &'static str, path: &str, mode: u16) {
+    let p = Path::new(path);
+    if p.exists() {
+        let data = fs::read(p).unwrap_or_else(|_| panic!("failed to read {}", path));
+        files.push(BuildFile { name, mode, data });
+    } else {
+        println!("cargo:warning={} not found; run `make userspace`", path);
+    }
 }
 
 fn build_lfs1(files: &[BuildFile]) -> Vec<u8> {

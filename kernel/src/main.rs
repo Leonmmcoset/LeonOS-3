@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+#![feature(abi_x86_interrupt)]
 
 extern crate alloc;
 
@@ -8,13 +9,16 @@ mod allocator;
 mod elf;
 mod elf_runner;
 mod fs;
+mod native_runner;
 mod logger;
 mod posix;
 mod shell;
 mod syscall;
+mod traps;
 
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::vec::Vec;
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::info::{FrameBufferInfo, Optional, PixelFormat};
 use bootloader_api::{entry_point, BootInfo};
@@ -94,6 +98,13 @@ static mut RAMDISK_INFO: Option<RamdiskInfo> = None;
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     syscall::set_stdin_reader(keyboard_read_ascii_nonblocking);
     allocator::init_heap();
+    traps::init();
+    if let Optional::Some(off) = boot_info.physical_memory_offset {
+        native_runner::set_physical_memory_offset(off);
+        serial_write(&format!("[LeonOS3] physical memory offset: 0x{:x}\n", off));
+    } else {
+        serial_write("[LeonOS3] physical memory offset missing\n");
+    }
     serial_write("[LeonOS3] kernel entered\n");
 
     if let Optional::Some(addr) = boot_info.ramdisk_addr {
@@ -309,25 +320,47 @@ fn handle_custom_command<D: DrawTarget>(terminal: &mut Terminal<D>, cmd: &str) -
     if let Some((name, args)) = run_target {
         if let Some(bytes) = ramdisk_bytes() {
             match fs::open(bytes, name) {
-                Ok(rec) => match elf_runner::run_linux_elf(terminal, rec.data) {
-                    Ok(()) => {
-                        let code = syscall::last_exit_code();
-                        let _ = write!(terminal, "\nrun {} {}: exited with code {}\n", name, args, code);
+                Ok(rec) => {
+                    let mut argv: Vec<&str> = Vec::new();
+                    argv.push(name);
+                    for a in args.split_whitespace() {
+                        argv.push(a);
                     }
-                    Err(err) => {
-                        let _ = write!(terminal, "run {} {}: failed: {:?}\n", name, args, err);
-                        serial_write(&format!("[LeonOS3] run {} {} failed: {:?}\n", name, args, err));
+                    serial_write(&format!("[LeonOS3] native start {} {}\n", name, args));
+                    match native_runner::run_native_elf_with_args(terminal, rec.data, &argv, &[]) {
+                        Ok(()) => {
+                            let code = syscall::last_exit_code();
+                            let _ = write!(terminal, "\nrun {} {}: exited with code {}\n", name, args, code);
+                        }
+                        Err(native_runner::NativeError::FixedVaddrUnsupported { .. }) => {
+                            serial_write(&format!("[LeonOS3] native fixed-vaddr fallback to interpreter: {} {}\n", name, args));
+                            match elf_runner::run_linux_elf_with_args(terminal, rec.data, &argv, &[]) {
+                                Ok(()) => {
+                                    let code = syscall::last_exit_code();
+                                    let _ = write!(terminal, "\nrun {} {}: exited with code {} (interp)\n", name, args, code);
+                                }
+                                Err(err) => {
+                                    let _ = write!(terminal, "run {} {}: failed: {:?}\n", name, args, err);
+                                    serial_write(&format!("[LeonOS3] run {} {} interpreter failed: {:?}\n", name, args, err));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            let _ = write!(terminal, "run {} {}: failed: {:?}\n", name, args, err);
+                            serial_write(&format!("[LeonOS3] run {} {} failed: {:?}\n", name, args, err));
+                        }
                     }
                 },
                 Err(e) => {
                     let _ = write!(terminal, "run: {:?}\n", e);
+                }
                 }
             }
         } else {
             terminal.process(b"run: ramdisk not loaded\n");
         }
         return true;
-    }
+
 
     false
 }
@@ -534,8 +567,6 @@ fn alloc_error(_layout: Layout) -> ! {
         spin_loop();
     }
 }
-
-
 
 
 
